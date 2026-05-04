@@ -1,0 +1,9 @@
+# Ignore any local config overrides
+*.env
+.env
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*~

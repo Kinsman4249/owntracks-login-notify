@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Contributors to owntracks-login-notify
+
+[Unit]
+Description=OwnTracks login notifier
+After=network.target nginx.service
+
+[Service]
+ExecStart=/usr/local/bin/owntracks-login-notify.sh
+Restart=on-failure
+RestartSec=5
+# Uncomment to override config via environment variables instead of editing the script:
+# Environment=SMTP2GO_KEY=api-xxxxxxxxxxxxxxxxxxxx
+# Environment=FROM_EMAIL=you@example.com
+# Environment=TO_EMAIL=you@example.com
+# Environment=NGINX_LOG=/var/log/nginx/access.log
+# Environment=WATCH_PATH=/owntracks/
+# Environment=SEEN_IPS_DIR=/var/lib/owntracks/seen_ips
+
+[Install]
+WantedBy=multi-user.target
