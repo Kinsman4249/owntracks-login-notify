@@ -1,0 +1,63 @@
+# =============================================================================
+# Release workflow — shell project
+# =============================================================================
+#
+# Bundles the project's source (scripts, README, LICENSE, etc.) into a
+# versioned tarball + zip and attaches them to a GitHub Release.
+#
+# To cut a release:
+#     git tag v0.1.0 && git push --tags
+#
+# To re-run manually: Actions tab > Release > Run workflow.
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0). Must already exist.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          name="${{ github.event.repository.name }}-${tag}"
+          mkdir -p dist
+          # `git archive` produces clean source archives for the exact tag,
+          # automatically excluding .git and anything marked export-ignore.
+          git archive --format=tar.gz --prefix="${name}/" -o "dist/${name}.tar.gz" HEAD
+          git archive --format=zip   --prefix="${name}/" -o "dist/${name}.zip"    HEAD
+          ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          fail_on_unmatched_files: true
