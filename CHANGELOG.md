@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-14
+
 ### Fixed
 - **Cloudflare IP filter was broken.** `is_cloudflare_ip()` invoked `ipcalc -n "$ip" "$cidr"`, which is not a valid invocation of Debian's `ipcalc` (it takes a single CIDR) and the `-n` flag means different things across ipcalc implementations. The check silently failed for nearly every Cloudflare IP, so any deployment proxied through Cloudflare generated an email for every authenticated request. Replaced with a [`grepcidr`](https://www.pc-tools.net/unix/grepcidr/)-based check that handles IPv4 + IPv6 correctly.
 
@@ -42,5 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path-traversal protection via sanitization of `user` and `ip` fields before constructing seen-IP file paths
 - Apache 2.0 license
 
-[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Kinsman4249/owntracks-login-notify/releases/tag/v1.0.0
