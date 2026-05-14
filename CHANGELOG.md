@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **`ipcalc` dependency.** Replaced by `grepcidr`.
 
+## [1.0.1] - 2026-05-05
+
+### Documentation
+- Adopted the post-1.0 security support policy in [SECURITY.md](SECURITY.md): only the newest major release line receives security updates. No code changes.
+
 ## [1.0.0] - 2026-05-04
 
 ### Added
@@ -45,5 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apache 2.0 license
 
 [Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.1.0
+[1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Kinsman4249/owntracks-login-notify/releases/tag/v1.0.0
