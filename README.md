@@ -2,6 +2,19 @@
 
 A lightweight Debian/Linux daemon that watches your nginx access log and sends an email via [smtp2go](https://www.smtp2go.com) whenever a new IP address authenticates to your [OwnTracks](https://owntracks.org) frontend.
 
+## Behind Cloudflare? Use the Worker instead — it gives more info
+
+If your OwnTracks frontend is proxied through Cloudflare (orange-cloud DNS), use the companion project **[OwnTracks-Security-Notifications-Cloudflare](https://github.com/Kinsman4249/OwnTracks-Security-Notifications-Cloudflare)** — it runs at the Cloudflare edge as a Worker and gives you richer alerts than this daemon can produce from log lines alone:
+
+- Detects **failed** login attempts (401), not just successful ones
+- **Geolocates** each IP using Cloudflare's `request.cf` data (country, region, city, ASN) — no external geo API needed
+- Sends a separate, higher-priority alert when a successful login comes from **outside your home region**
+- Per-scenario cooldowns (1 day for outside-region, 30 days for normal/failed) tracked in Cloudflare KV
+- Pass-through — never blocks or modifies your traffic
+- No server-side setup, nginx `real_ip` config, or smtp2go on your origin
+
+Use this `owntracks-login-notify` daemon when you're **not** behind Cloudflare (or want a server-side backup alongside the Worker).
+
 ## How it works
 
 - Tails the nginx access log in real time using `tail -F`
@@ -111,7 +124,7 @@ sudo rm /var/lib/owntracks/seen_ips/admin_1.2.3.4
 ## Notes
 
 - This relies on nginx's HTTP Basic Auth logging the username in the `$remote_user` field (standard in the `combined` log format). If your nginx uses a custom log format, verify `$remote_user` is included.
-- **If you're behind Cloudflare**, nginx will log Cloudflare's edge IP as the remote address — not the real visitor IP. The CF filter will correctly classify every request as Cloudflare and you'll never get an alert. Configure nginx's `real_ip` module with `set_real_ip_from` (Cloudflare's ranges) and `real_ip_header CF-Connecting-IP` so the actual visitor IP ends up in the log. See [Cloudflare's docs](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/) for the up-to-date snippet.
+- **If you're behind Cloudflare**, the simplest answer is to skip this daemon and use the [Cloudflare Worker helper](https://github.com/Kinsman4249/OwnTracks-Security-Notifications-Cloudflare) — it sees the real visitor IP natively and gives you geolocation + failed-login alerts on top. If you want to keep using this daemon behind Cloudflare anyway, nginx will log Cloudflare's edge IP as the remote address — the CF filter will then classify every request as Cloudflare and you'll never get an alert. Fix it by configuring nginx's `real_ip` module with `set_real_ip_from` (Cloudflare's ranges) and `real_ip_header CF-Connecting-IP` so the actual visitor IP ends up in the log. See [Cloudflare's docs](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/) for the up-to-date snippet.
 - On each service start the daemon runs a self-test (`1.1.1.1` should classify as Cloudflare). If the test fails the service exits loudly rather than silently sending an email for every authenticated request.
 
 ## License

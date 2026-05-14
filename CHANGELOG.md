@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `owntracks-login-notify.sh` no longer holds credential defaults — all config comes from environment variables populated by the systemd `EnvironmentFile=`.
 - Service unit `After=` changed from `network.target` to `network-online.target` (+ `Wants=network-online.target`) so the CF range fetch at startup has a working network.
 
+### Documentation
+- README now points users behind Cloudflare at the companion [OwnTracks-Security-Notifications-Cloudflare](https://github.com/Kinsman4249/OwnTracks-Security-Notifications-Cloudflare) Worker, which sees the real visitor IP natively and adds geolocation, failed-login alerts, and outside-region alerts on top.
+
 ### Removed
 - **`ipcalc` dependency.** Replaced by `grepcidr`.
 
