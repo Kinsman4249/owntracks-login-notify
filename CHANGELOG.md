@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-08
+
+### Fixed
+- **Layer 2 ASN lookups now default to RIPEstat instead of iptoasn.com.** `api.iptoasn.com` sits behind Cloudflare's WAF, which blocks requests from many server/datacenter IPs — on such hosts the ASN failsafe self-test warned `could not reach ...iptoasn...` and Layer 2 permanently failed open. The default `ASN_LOOKUP_URL` is now RIPEstat's network-info API (`https://stat.ripe.net/data/network-info/data.json?resource=`), the same provider Layer 1 already uses. The parser understands both RIPEstat (`{"data":{"asns":[..]}}`) and iptoasn (`{"as_number":N}`) response shapes, so iptoasn-compatible endpoints still work via `ASN_LOOKUP_URL`.
+- `install.sh` now writes the ASN failsafe settings (`CF_ASN`, `ASN_PREFIX_EXPANSION`, `ASN_FAILSAFE`, `ASN_LOOKUP_TIMEOUT`, `ASN_LOOKUP_URL`, `RIPESTAT_URL`) into `/etc/default/owntracks-login-notify` and preserves customised values across re-installs (previously a re-install dropped hand-added ASN lines).
+- `get_asn()` now normalises non-numeric parser output to empty, guaranteeing fail-open behaviour on malformed responses.
+
 ## [1.2.0] - 2026-07-08
 
 ### Added
@@ -62,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path-traversal protection via sanitization of `user` and `ip` fields before constructing seen-IP file paths
 - Apache 2.0 license
 
-[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.0.1

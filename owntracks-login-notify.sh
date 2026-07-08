@@ -54,7 +54,12 @@ CF_ASN="${CF_ASN:-13335}"                          # Cloudflare's autonomous sys
 ASN_PREFIX_EXPANSION="${ASN_PREFIX_EXPANSION:-1}"  # Layer 1: merge AS<CF_ASN> prefixes at startup
 ASN_FAILSAFE="${ASN_FAILSAFE:-1}"                  # Layer 2: per-IP ASN lookup before sending
 ASN_LOOKUP_TIMEOUT="${ASN_LOOKUP_TIMEOUT:-3}"      # seconds per per-IP lookup
-ASN_LOOKUP_URL="${ASN_LOOKUP_URL:-https://api.iptoasn.com/v1/as/ip/}"          # IP is appended
+# Per-IP ASN lookup endpoint; the IP is appended. Defaults to RIPEstat's
+# network-info API — same provider as Layer 1, reliably reachable from
+# servers. (The previous default, api.iptoasn.com, sits behind Cloudflare's
+# WAF, which blocks many datacenter IPs.) Both RIPEstat ({"data":{"asns":[..]}})
+# and iptoasn-style ({"as_number":N}) responses are understood.
+ASN_LOOKUP_URL="${ASN_LOOKUP_URL:-https://stat.ripe.net/data/network-info/data.json?resource=}"   # IP is appended
 RIPESTAT_URL="${RIPESTAT_URL:-https://stat.ripe.net/data/announced-prefixes/data.json?resource=}" # AS<CF_ASN> is appended
 
 # --- Validate config ---
@@ -109,22 +114,37 @@ is_cloudflare_ip() {
 
 # Per-IP ASN lookup, cached for the life of the process. Prints the ASN
 # (digits) or nothing on failure. Fails silently → caller fails open.
+# Understands two response shapes:
+#   RIPEstat network-info : {"data":{"asns":["13335"], ...}}
+#   iptoasn-style         : {"as_number":13335, ...}
 declare -A ASN_CACHE
 get_asn() {
-    local ip="$1" json asn
+    local ip="$1" json asn=""
     [[ -z "$ip" ]] && return 0
     if [[ -n "${ASN_CACHE[$ip]+x}" ]]; then
         printf '%s' "${ASN_CACHE[$ip]}"
         return 0
     fi
     json="$(curl -sf --max-time "$ASN_LOOKUP_TIMEOUT" "${ASN_LOOKUP_URL}${ip}" 2>/dev/null || true)"
-    if [[ -n "$json" ]] && command -v jq >/dev/null 2>&1; then
-        asn="$(printf '%s' "$json" | jq -r '.as_number // empty' 2>/dev/null)"
-    else
-        asn="$(printf '%s' "$json" \
-               | grep -oE '"as_number"[[:space:]]*:[[:space:]]*[0-9]+' \
-               | grep -oE '[0-9]+$' | head -1)"
+    if [[ -n "$json" ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            asn="$(printf '%s' "$json" \
+                   | jq -r '(.data.asns[0] // .as_number // empty) | tostring' 2>/dev/null)"
+        else
+            # RIPEstat shape first: "asns":["13335", ...]
+            asn="$(printf '%s' "$json" \
+                   | grep -oE '"asns"[[:space:]]*:[[:space:]]*\[[[:space:]]*"?[0-9]+' \
+                   | grep -oE '[0-9]+$' | head -1)"
+            # Fallback to iptoasn shape: "as_number":13335
+            if [[ -z "$asn" ]]; then
+                asn="$(printf '%s' "$json" \
+                       | grep -oE '"as_number"[[:space:]]*:[[:space:]]*[0-9]+' \
+                       | grep -oE '[0-9]+$' | head -1)"
+            fi
+        fi
     fi
+    # Normalise anything non-numeric (jq null, error text) to empty → fail open.
+    [[ "$asn" =~ ^[0-9]+$ ]] || asn=""
     ASN_CACHE[$ip]="$asn"
     printf '%s' "$asn"
 }

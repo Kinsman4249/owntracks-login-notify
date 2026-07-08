@@ -39,7 +39,7 @@ Both layers are independently toggleable and the target ASN is configurable — 
 - nginx with HTTP Basic Auth
 - `curl`, `awk`, `tail`, `grepcidr` (`sudo apt install curl gawk coreutils grepcidr`)
 - `jq` is optional — used to parse ASN/prefix JSON when present; a `grep` fallback is used otherwise (`sudo apt install jq` if you want it)
-- Outbound HTTPS to `stat.ripe.net` (startup ASN prefix expansion) and `api.iptoasn.com` (per-IP ASN lookups); both endpoints are configurable
+- Outbound HTTPS to `stat.ripe.net` (both the startup ASN prefix expansion and the per-IP ASN lookups default to RIPEstat); endpoints are configurable
 - An [smtp2go](https://www.smtp2go.com) account with an API key and verified sender address
 
 ## Installation
@@ -108,7 +108,7 @@ sudo systemctl restart owntracks-login-notify
 | `ASN_PREFIX_EXPANSION` | `1` | Layer 1: merge AS`CF_ASN` announced prefixes into the ranges file at startup (`0` to disable) |
 | `ASN_FAILSAFE` | `1` | Layer 2: per-IP ASN lookup just before sending (`0` to disable) |
 | `ASN_LOOKUP_TIMEOUT` | `3` | Seconds per per-IP ASN lookup |
-| `ASN_LOOKUP_URL` | `https://api.iptoasn.com/v1/as/ip/` | ASN lookup endpoint; the IP is appended. Response must contain an `as_number` field |
+| `ASN_LOOKUP_URL` | `https://stat.ripe.net/data/network-info/data.json?resource=` | ASN lookup endpoint; the IP is appended. Both RIPEstat (`{"data":{"asns":[..]}}`) and iptoasn (`{"as_number":N}`) response shapes are understood |
 | `RIPESTAT_URL` | `https://stat.ripe.net/data/announced-prefixes/data.json?resource=` | RIPEstat base; `AS<CF_ASN>` is appended |
 
 See `owntracks-login-notify.env.example` for a fully commented template.
@@ -143,7 +143,8 @@ sudo rm /var/lib/owntracks/seen_ips/admin_1.2.3.4
 - This relies on nginx's HTTP Basic Auth logging the username in the `$remote_user` field (standard in the `combined` log format). If your nginx uses a custom log format, verify `$remote_user` is included.
 - **If you're behind Cloudflare**, the simplest answer is to skip this daemon and use the [Cloudflare Worker helper](https://github.com/Kinsman4249/OwnTracks-Security-Notifications-Cloudflare) — it sees the real visitor IP natively and gives you geolocation + failed-login alerts on top. If you want to keep using this daemon behind Cloudflare anyway, nginx will log Cloudflare's edge IP as the remote address — the CF filter will then classify every request as Cloudflare and you'll never get an alert. Fix it by configuring nginx's `real_ip` module with `set_real_ip_from` (Cloudflare's ranges) and `real_ip_header CF-Connecting-IP` so the actual visitor IP ends up in the log. See [Cloudflare's docs](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/) for the up-to-date snippet.
 - On each service start the daemon runs self-tests: the CIDR check must classify `1.1.1.1` as Cloudflare (hard failure if not — the service exits rather than emailing on every login), and, when `ASN_FAILSAFE=1`, the ASN check is verified against `1.1.1.1` too (this one only warns, since the ASN failsafe fails open by design).
-- Still getting Cloudflare notifications after upgrading? Confirm `journalctl -u owntracks-login-notify` shows a non-zero AS13335 prefix count at startup (Layer 1 reached RIPEstat) and an ASN self-test line (Layer 2 reached the lookup service). If your host blocks outbound HTTPS to `stat.ripe.net` or `api.iptoasn.com`, point `RIPESTAT_URL` / `ASN_LOOKUP_URL` at reachable equivalents.
+- Still getting Cloudflare notifications after upgrading? Confirm `journalctl -u owntracks-login-notify` shows a non-zero AS13335 prefix count at startup (Layer 1 reached RIPEstat) and `ASN failsafe self-test passed` (Layer 2 reached the lookup service). If your host blocks outbound HTTPS to `stat.ripe.net`, point `RIPESTAT_URL` / `ASN_LOOKUP_URL` at reachable equivalents. Also make sure the service was actually **restarted** after the upgrade — a long-running old process keeps filtering with the old logic (`sudo systemctl restart owntracks-login-notify`).
+- Versions ≤ 1.2.0 defaulted `ASN_LOOKUP_URL` to `api.iptoasn.com`, which sits behind Cloudflare's WAF and blocks many server IPs — the self-test then warns `could not reach ...iptoasn...` and Layer 2 fails open. Upgrading fixes this (the default is now RIPEstat); custom `ASN_LOOKUP_URL` values you set yourself are preserved.
 
 ## License
 

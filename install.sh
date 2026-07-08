@@ -108,6 +108,12 @@ declare -A CFG=(
     [IP_TTL]="2592000"
     [SEEN_IPS_DIR]="$SEEN_IPS_DIR_DEFAULT"
     [CF_RANGES_FILE]="$CF_RANGES_FILE_DEFAULT"
+    [CF_ASN]="13335"
+    [ASN_PREFIX_EXPANSION]="1"
+    [ASN_FAILSAFE]="1"
+    [ASN_LOOKUP_TIMEOUT]="3"
+    [ASN_LOOKUP_URL]="https://stat.ripe.net/data/network-info/data.json?resource="
+    [RIPESTAT_URL]="https://stat.ripe.net/data/announced-prefixes/data.json?resource="
 )
 
 # Snapshot caller env (precedence step 1 — applied last so it wins).
@@ -263,6 +269,14 @@ WATCH_PATH="${CFG[WATCH_PATH]}"
 IP_TTL=${CFG[IP_TTL]}
 SEEN_IPS_DIR="${CFG[SEEN_IPS_DIR]}"
 CF_RANGES_FILE="${CFG[CF_RANGES_FILE]}"
+
+# Cloudflare ASN failsafe (see README / owntracks-login-notify.env.example)
+CF_ASN=${CFG[CF_ASN]}
+ASN_PREFIX_EXPANSION=${CFG[ASN_PREFIX_EXPANSION]}
+ASN_FAILSAFE=${CFG[ASN_FAILSAFE]}
+ASN_LOOKUP_TIMEOUT=${CFG[ASN_LOOKUP_TIMEOUT]}
+ASN_LOOKUP_URL="${CFG[ASN_LOOKUP_URL]}"
+RIPESTAT_URL="${CFG[RIPESTAT_URL]}"
 EOF
 install -m 0600 "$TMP_CFG" "$CONFIG_DST"
 rm -f "$TMP_CFG"
