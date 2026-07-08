@@ -18,9 +18,20 @@
 # Tails the nginx access log and sends an email via smtp2go whenever an
 # authenticated user hits the owntracks frontend from a new or expired IP.
 #
-# Cloudflare IP ranges are fetched fresh at startup and excluded using
-# grepcidr (handles IPv4 + IPv6). Once an IP is seen, it is ignored for
-# one month before being considered new again.
+# Cloudflare exclusion runs in two layers, both over HTTPS (curl only):
+#   Layer 1 (startup): the published Cloudflare ips-v4/ips-v6 lists AND the
+#       full set of prefixes announced by Cloudflare's ASN (AS13335, from
+#       RIPEstat) are fetched into a ranges file and matched per-line with
+#       grepcidr (IPv4 + IPv6). The published lists are only Cloudflare's
+#       customer-facing ranges; the ASN covers everything they announce
+#       (WARP, Zero Trust, Spectrum, newer allocations).
+#   Layer 2 (per-IP failsafe): immediately before an email would be sent, the
+#       candidate IP's ASN is looked up over HTTPS; if it is Cloudflare's ASN
+#       the notification is skipped. This only runs for would-be alerts, so
+#       lookups are rare. It fails open — a failed/timed-out lookup is treated
+#       as non-Cloudflare so a transient outage never suppresses a real alert.
+#
+# Once an IP is seen, it is ignored for one month before being new again.
 #
 # Config is loaded from environment variables. The systemd unit pulls
 # them from /etc/default/owntracks-login-notify — do NOT edit this
@@ -38,6 +49,14 @@ IP_TTL="${IP_TTL:-$(( 30 * 24 * 3600 ))}"         # 30 days
 WATCH_PATH="${WATCH_PATH:-/owntracks/}"
 CF_RANGES_FILE="${CF_RANGES_FILE:-/var/lib/owntracks/cf_ranges.txt}"
 
+# Cloudflare ASN failsafe
+CF_ASN="${CF_ASN:-13335}"                          # Cloudflare's autonomous system number
+ASN_PREFIX_EXPANSION="${ASN_PREFIX_EXPANSION:-1}"  # Layer 1: merge AS<CF_ASN> prefixes at startup
+ASN_FAILSAFE="${ASN_FAILSAFE:-1}"                  # Layer 2: per-IP ASN lookup before sending
+ASN_LOOKUP_TIMEOUT="${ASN_LOOKUP_TIMEOUT:-3}"      # seconds per per-IP lookup
+ASN_LOOKUP_URL="${ASN_LOOKUP_URL:-https://api.iptoasn.com/v1/as/ip/}"          # IP is appended
+RIPESTAT_URL="${RIPESTAT_URL:-https://stat.ripe.net/data/announced-prefixes/data.json?resource=}" # AS<CF_ASN> is appended
+
 # --- Validate config ---
 err=0
 if [[ -z "$SMTP2GO_KEY" || "$SMTP2GO_KEY" == api-xxx* ]]; then
@@ -54,7 +73,7 @@ if [[ -z "$TO_EMAIL" || "$TO_EMAIL" == *example.com ]]; then
 fi
 [[ "$err" -ne 0 ]] && exit 1
 
-# --- Dependencies ---
+# --- Dependencies (jq is optional; a grep fallback is used when absent) ---
 for cmd in curl awk tail grepcidr; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "ERROR: Required command '$cmd' not found. Install with: sudo apt install $cmd" >&2
@@ -66,46 +85,129 @@ done
 mkdir -p "$SEEN_IPS_DIR"
 mkdir -p "$(dirname "$CF_RANGES_FILE")"
 
-# --- Fetch Cloudflare IP ranges to a file (atomic write; fall back to cache) ---
-TMP_RANGES="$(mktemp)"
-trap 'rm -f "$TMP_RANGES" "${TMP_RANGES}.clean"' EXIT
+# --- Helpers -----------------------------------------------------------------
 
-if curl -sf https://www.cloudflare.com/ips-v4 >> "$TMP_RANGES" \
-   && curl -sf https://www.cloudflare.com/ips-v6 >> "$TMP_RANGES"; then
-    grep -E '\S' "$TMP_RANGES" > "${TMP_RANGES}.clean" || true
-    mv "${TMP_RANGES}.clean" "$CF_RANGES_FILE"
-    n="$(wc -l < "$CF_RANGES_FILE" | tr -d ' ')"
-    echo "Loaded $n Cloudflare IP ranges into $CF_RANGES_FILE."
-elif [[ -s "$CF_RANGES_FILE" ]]; then
-    n="$(wc -l < "$CF_RANGES_FILE" | tr -d ' ')"
-    echo "WARNING: Could not refresh Cloudflare IP ranges from the API. Using cached $n ranges from $CF_RANGES_FILE." >&2
-else
-    echo "ERROR: Failed to fetch Cloudflare IP ranges and no cache exists at $CF_RANGES_FILE." >&2
-    echo "Refusing to start — every Cloudflare-proxied login would generate an email." >&2
-    exit 1
-fi
+# Extract CIDR prefixes from a RIPEstat announced-prefixes JSON payload.
+# Uses jq when available, otherwise a whitespace-tolerant grep/sed fallback.
+extract_prefixes() {
+    local json="$1"
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '.data.prefixes[]?.prefix // empty' 2>/dev/null
+    else
+        printf '%s' "$json" \
+            | grep -oE '"prefix"[[:space:]]*:[[:space:]]*"[^"]+"' \
+            | sed -E 's/.*:[[:space:]]*"([^"]+)"/\1/'
+    fi
+}
 
-# --- Cloudflare IP check (grepcidr handles IPv4 + IPv6) ---
+# Cloudflare CIDR check (grepcidr handles IPv4 + IPv6).
 is_cloudflare_ip() {
     local ip="$1"
     [[ -z "$ip" ]] && return 1
     printf '%s\n' "$ip" | grepcidr -f "$CF_RANGES_FILE" >/dev/null 2>&1
 }
 
-# --- Startup self-test ---
-# 1.1.1.1 is Cloudflare's public DNS resolver and is always within their announced
-# ranges. If our check does not classify it as CF, the filter is broken — exit
-# loudly rather than silently sending an alert for every login.
+# Per-IP ASN lookup, cached for the life of the process. Prints the ASN
+# (digits) or nothing on failure. Fails silently → caller fails open.
+declare -A ASN_CACHE
+get_asn() {
+    local ip="$1" json asn
+    [[ -z "$ip" ]] && return 0
+    if [[ -n "${ASN_CACHE[$ip]+x}" ]]; then
+        printf '%s' "${ASN_CACHE[$ip]}"
+        return 0
+    fi
+    json="$(curl -sf --max-time "$ASN_LOOKUP_TIMEOUT" "${ASN_LOOKUP_URL}${ip}" 2>/dev/null || true)"
+    if [[ -n "$json" ]] && command -v jq >/dev/null 2>&1; then
+        asn="$(printf '%s' "$json" | jq -r '.as_number // empty' 2>/dev/null)"
+    else
+        asn="$(printf '%s' "$json" \
+               | grep -oE '"as_number"[[:space:]]*:[[:space:]]*[0-9]+' \
+               | grep -oE '[0-9]+$' | head -1)"
+    fi
+    ASN_CACHE[$ip]="$asn"
+    printf '%s' "$asn"
+}
+
+# True only when the IP's ASN equals CF_ASN. Fail-open: unknown → false (send).
+# Calls get_asn directly (not in a subshell) so the cache it populates persists
+# into the caller's scope — the tail loop runs in one subshell, so lookups are
+# reused across iterations and the skip-log can read ASN_CACHE safely.
+is_cloudflare_asn() {
+    local ip="$1"
+    get_asn "$ip" >/dev/null
+    [[ "${ASN_CACHE[$ip]:-}" == "$CF_ASN" ]]
+}
+
+# --- Fetch Cloudflare ranges (published + ASN expansion); atomic write --------
+TMP_RANGES="$(mktemp)"
+trap 'rm -f "$TMP_RANGES" "${TMP_RANGES}.clean"' EXIT
+
+published_ok=0
+if curl -sf --max-time 10 https://www.cloudflare.com/ips-v4 >> "$TMP_RANGES" \
+   && curl -sf --max-time 10 https://www.cloudflare.com/ips-v6 >> "$TMP_RANGES"; then
+    published_ok=1
+else
+    echo "WARNING: Could not fetch Cloudflare published ips-v4/ips-v6 lists." >&2
+fi
+
+# Layer 1: expand Cloudflare's ASN into its full announced-prefix set.
+asn_prefix_count=0
+if [[ "$ASN_PREFIX_EXPANSION" == "1" ]]; then
+    ripe_json="$(curl -sf --max-time 15 "${RIPESTAT_URL}AS${CF_ASN}" 2>/dev/null || true)"
+    if [[ -n "$ripe_json" ]]; then
+        asn_prefixes="$(extract_prefixes "$ripe_json")"
+        if [[ -n "$asn_prefixes" ]]; then
+            printf '%s\n' "$asn_prefixes" >> "$TMP_RANGES"
+            asn_prefix_count=$(printf '%s\n' "$asn_prefixes" | grep -c '/')
+        fi
+    fi
+    if [[ "$asn_prefix_count" -eq 0 ]]; then
+        echo "WARNING: Could not fetch AS${CF_ASN} announced prefixes (Layer 1). Continuing without ASN prefix expansion." >&2
+    fi
+fi
+
+if [[ "$published_ok" -eq 1 || "$asn_prefix_count" -gt 0 ]]; then
+    grep -E '\S' "$TMP_RANGES" | sort -u > "${TMP_RANGES}.clean" || true
+    if [[ -s "${TMP_RANGES}.clean" ]]; then
+        mv "${TMP_RANGES}.clean" "$CF_RANGES_FILE"
+        n="$(wc -l < "$CF_RANGES_FILE" | tr -d ' ')"
+        echo "Loaded $n Cloudflare ranges into $CF_RANGES_FILE (published lists + ${asn_prefix_count} AS${CF_ASN} prefixes)."
+    fi
+elif [[ -s "$CF_RANGES_FILE" ]]; then
+    n="$(wc -l < "$CF_RANGES_FILE" | tr -d ' ')"
+    echo "WARNING: Could not refresh Cloudflare ranges from any source. Using cached $n ranges from $CF_RANGES_FILE." >&2
+else
+    echo "ERROR: Failed to fetch Cloudflare ranges and no cache exists at $CF_RANGES_FILE." >&2
+    echo "Refusing to start — every Cloudflare-proxied login would generate an email." >&2
+    exit 1
+fi
+
+# --- Startup self-tests ------------------------------------------------------
+# 1.1.1.1 is Cloudflare's public DNS resolver: always within their ranges and
+# always AS<CF_ASN>. If the CIDR check misclassifies it, the filter is broken —
+# exit loudly. The ASN check only warns (it fails open by design).
 if ! is_cloudflare_ip "1.1.1.1"; then
     echo "ERROR: Cloudflare IP self-test failed — 1.1.1.1 was not classified as Cloudflare." >&2
     echo "Check $CF_RANGES_FILE and grepcidr. Refusing to start." >&2
     exit 1
 fi
-echo "Cloudflare IP filter self-test passed (1.1.1.1 -> CF)."
+echo "Cloudflare CIDR self-test passed (1.1.1.1 -> CF)."
+
+if [[ "$ASN_FAILSAFE" == "1" ]]; then
+    test_asn="$(get_asn "1.1.1.1")"
+    if [[ "$test_asn" == "$CF_ASN" ]]; then
+        echo "ASN failsafe self-test passed (1.1.1.1 -> AS${test_asn})."
+    elif [[ -z "$test_asn" ]]; then
+        echo "WARNING: ASN failsafe self-test could not reach ${ASN_LOOKUP_URL} — the failsafe will fail open until it is reachable." >&2
+    else
+        echo "WARNING: ASN failsafe self-test got AS${test_asn} for 1.1.1.1 (expected AS${CF_ASN}). Check CF_ASN / ASN_LOOKUP_URL." >&2
+    fi
+fi
 
 echo "Watching $NGINX_LOG for logins to $WATCH_PATH ..."
 
-# --- Tail loop ---
+# --- Tail loop ---------------------------------------------------------------
 # -F (vs -f) handles log rotation automatically.
 tail -F -n 0 "$NGINX_LOG" | while read -r line; do
 
@@ -131,6 +233,15 @@ tail -F -n 0 "$NGINX_LOG" | while read -r line; do
         last_seen=$(cat "$IP_FILE")
         age=$(( now - last_seen ))
         [[ "$age" -lt "$IP_TTL" ]] && continue
+    fi
+
+    # Layer 2 final failsafe: ASN lookup right before sending. Runs only for a
+    # genuinely new IP that already passed the CIDR + TTL checks, so lookups are
+    # rare. We do NOT record CF IPs as seen (no state pollution); the in-process
+    # cache prevents repeat lookups for the same IP.
+    if [[ "$ASN_FAILSAFE" == "1" ]] && is_cloudflare_asn "$ip"; then
+        echo "Skipping $ip — ASN ${ASN_CACHE[$ip]:-?} is Cloudflare (AS${CF_ASN})."
+        continue
     fi
 
     # Update timestamp BEFORE the email so a failed curl doesn't spam-loop.

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-08
+
+### Added
+- **Cloudflare ASN (AS13335) failsafe** to stop notifications from Cloudflare IPs that aren't in the published `ips-v4`/`ips-v6` lists. Those lists are only Cloudflare's customer-facing ranges; AS13335 announces many more prefixes (WARP, Zero Trust, Spectrum, newer allocations) that a CIDR-only filter misses. Two layers, both over HTTPS via `curl` (no new dependency):
+  - **Layer 1 — startup prefix expansion:** on each service start the daemon fetches every prefix announced by AS`CF_ASN` from RIPEstat and merges it (deduped) into the cached ranges file alongside the published lists, keeping the per-line `grepcidr` match fast.
+  - **Layer 2 — per-IP ASN failsafe:** immediately before an email would be sent (only for a new IP that already passed the CIDR and TTL checks), the candidate IP's ASN is looked up over HTTPS and the alert is skipped if it is Cloudflare's. Results are cached per run; lookups use a short timeout and **fail open** so a transient outage never suppresses a real alert.
+- New config: `CF_ASN` (13335), `ASN_PREFIX_EXPANSION` (1), `ASN_FAILSAFE` (1), `ASN_LOOKUP_TIMEOUT` (3), `ASN_LOOKUP_URL`, `RIPESTAT_URL`. All documented in the README and `owntracks-login-notify.env.example`.
+- ASN self-test at startup (`1.1.1.1` should resolve to AS`CF_ASN`); warns rather than hard-failing, since the failsafe fails open.
+- Optional `jq` support for parsing ASN/prefix JSON, with a `grep`/`sed` fallback when `jq` is absent.
+
+### Changed
+- The cached Cloudflare ranges file is now deduped and sorted, and its startup log line reports how many AS`CF_ASN` prefixes were merged.
+
 ## [1.1.0] - 2026-05-14
 
 ### Fixed
@@ -49,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path-traversal protection via sanitization of `user` and `ip` fields before constructing seen-IP file paths
 - Apache 2.0 license
 
-[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Kinsman4249/owntracks-login-notify/releases/tag/v1.0.0
