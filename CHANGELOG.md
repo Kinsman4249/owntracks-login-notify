@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.1] - 2026-07-08
+## [1.3.0] - 2026-07-08
+
+### Added
+- **Version visibility.** The script now carries a `VERSION` marker (single source of truth) and logs `owntracks-login-notify vX.Y.Z starting ...` as its first line, so `journalctl` always shows which version is running. `install.sh` prints the version being installed, and on upgrades shows the transition (`Existing install detected (v1.2.0) — upgrading to v1.3.0`; installs older than 1.3.0 show as `pre-1.3.0`).
+- **Post-install diagnostics.** `install.sh` now ends with a smoke test of every external touchpoint, each failure printing concrete what-to-look-at notes: nginx access log readability, Cloudflare published list fetch, RIPEstat announced-prefixes (Layer 1), per-IP ASN lookup (Layer 2 — `1.1.1.1` must resolve to AS`CF_ASN`), smtp2go API reachability **and API-key validation** (via an empty-recipient request — no test email is sent), and seen-IPs directory writability. Diagnostic failures never abort the install; the summary reports how many checks need attention.
 
 ### Fixed
 - **Layer 2 ASN lookups now default to RIPEstat instead of iptoasn.com.** `api.iptoasn.com` sits behind Cloudflare's WAF, which blocks requests from many server/datacenter IPs — on such hosts the ASN failsafe self-test warned `could not reach ...iptoasn...` and Layer 2 permanently failed open. The default `ASN_LOOKUP_URL` is now RIPEstat's network-info API (`https://stat.ripe.net/data/network-info/data.json?resource=`), the same provider Layer 1 already uses. The parser understands both RIPEstat (`{"data":{"asns":[..]}}`) and iptoasn (`{"as_number":N}`) response shapes, so iptoasn-compatible endpoints still work via `ASN_LOOKUP_URL`.
@@ -69,8 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path-traversal protection via sanitization of `user` and `ip` fields before constructing seen-IP file paths
 - Apache 2.0 license
 
-[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.1...HEAD
-[1.2.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.0...v1.2.1
+[Unreleased]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Kinsman4249/owntracks-login-notify/compare/v1.0.0...v1.0.1

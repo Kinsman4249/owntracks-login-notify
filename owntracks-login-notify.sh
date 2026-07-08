@@ -39,6 +39,13 @@
 
 set -u
 
+# Single source of truth for the project version. install.sh reads this line
+# (grep '^VERSION=') to print what it is installing; the startup banner below
+# makes the running version visible in journalctl.
+VERSION="1.3.0"
+
+echo "owntracks-login-notify v${VERSION} starting ..."
+
 # --- Config (env-only; install.sh writes /etc/default/owntracks-login-notify) ---
 NGINX_LOG="${NGINX_LOG:-/var/log/nginx/access.log}"
 SMTP2GO_KEY="${SMTP2GO_KEY:-}"

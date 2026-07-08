@@ -52,6 +52,8 @@ sudo bash install.sh
 
 The installer will prompt for your smtp2go API key, sender address, and recipient address (plus optional values like the nginx log path and watch path). No need to edit any files by hand.
 
+It finishes by printing the installed version and a **post-install diagnostics** summary that smoke-tests everything the daemon depends on — nginx log readability, the Cloudflare list fetch, RIPEstat (Layer 1), the ASN lookup endpoint (Layer 2), the smtp2go API **including your API key** (validated without sending a test email), and state-directory writability. Any `FAIL` line comes with pointers on what to look at first; diagnostics never abort the install.
+
 Verify it is running:
 
 ```bash
@@ -130,6 +132,11 @@ sudo bash uninstall.sh --purge
 ```bash
 # View live logs
 sudo journalctl -u owntracks-login-notify -f
+
+# Which version is installed?
+grep -m1 '^VERSION=' /usr/local/bin/owntracks-login-notify.sh
+# (the running version is also the first startup line in journalctl:
+#  "owntracks-login-notify vX.Y.Z starting ...")
 
 # Restart after editing /etc/default/owntracks-login-notify
 sudo systemctl restart owntracks-login-notify

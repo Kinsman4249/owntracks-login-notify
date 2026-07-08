@@ -90,12 +90,16 @@ for f in "$SCRIPT_SRC" "$SERVICE_SRC"; do
 done
 
 # --- Detect existing install ---
+# Version marker was introduced in 1.3.0; older installs show as "pre-1.3.0".
+get_version_from() { { grep -m1 '^VERSION=' "$1" 2>/dev/null || true; } | cut -d'"' -f2; }
+NEW_VERSION="$(get_version_from "$SCRIPT_SRC")"
 EXISTING=0
 if [[ -f "$SCRIPT_DST" || -f "$SERVICE_DST" || -f "$CONFIG_DST" ]]; then
     EXISTING=1
-    echo "Existing install detected — will upgrade in place."
+    OLD_VERSION="$(get_version_from "$SCRIPT_DST")"
+    echo "Existing install detected (v${OLD_VERSION:-pre-1.3.0}) — upgrading to v${NEW_VERSION:-unknown}."
 else
-    echo "Fresh install."
+    echo "Fresh install of owntracks-login-notify v${NEW_VERSION:-unknown}."
 fi
 
 # --- Config discovery ---
@@ -292,14 +296,130 @@ systemctl daemon-reload
 echo "Enabling and starting service ..."
 systemctl enable --now owntracks-login-notify
 
+# --- Post-install diagnostics --------------------------------------------------
+# Quick smoke tests of every external touchpoint the daemon relies on. A FAIL
+# here never aborts the install (the daemon is designed to degrade gracefully);
+# each failure prints concrete pointers on what to look at first.
+DIAG_FAILS=0
+diag_ok()   { printf '  OK    %s\n' "$1"; }
+diag_fail() {
+    DIAG_FAILS=$((DIAG_FAILS+1))
+    printf '  FAIL  %s\n' "$1"; shift
+    local n
+    for n in "$@"; do printf '        -> %s\n' "$n"; done
+}
+
+echo
+echo "== Post-install diagnostics =="
+echo "  Installed version: v$(get_version_from "$SCRIPT_DST")"
+
+# 1. nginx access log readable
+if [[ -r "${CFG[NGINX_LOG]}" ]]; then
+    diag_ok "nginx log readable: ${CFG[NGINX_LOG]}"
+else
+    diag_fail "nginx log not readable: ${CFG[NGINX_LOG]}" \
+        "Check the path exists: ls -l ${CFG[NGINX_LOG]}" \
+        "Using a vhost-specific access log? Set NGINX_LOG in $CONFIG_DST and restart the service" \
+        "Until this path is right, the daemon tails nothing and no login will ever be detected"
+fi
+
+# 2. Cloudflare published IP lists
+cf_v4="$(curl -sf --max-time 8 https://www.cloudflare.com/ips-v4 2>/dev/null || true)"
+cf_v6="$(curl -sf --max-time 8 https://www.cloudflare.com/ips-v6 2>/dev/null || true)"
+v4n="$(printf '%s' "$cf_v4" | { grep -c '/' || true; })"
+v6n="$(printf '%s' "$cf_v6" | { grep -c '/' || true; })"
+if [[ "$v4n" -gt 0 && "$v6n" -gt 0 ]]; then
+    diag_ok "Cloudflare published lists reachable ($v4n v4 + $v6n v6 ranges)"
+else
+    diag_fail "Cloudflare published lists not reachable (www.cloudflare.com/ips-v4, /ips-v6)" \
+        "Check outbound HTTPS/DNS: curl -v https://www.cloudflare.com/ips-v4" \
+        "The daemon falls back to the cached ranges at ${CFG[CF_RANGES_FILE]} if one exists" \
+        "With no cache AND no fetch, the service refuses to start (see journalctl)"
+fi
+
+# 3. Layer 1 — RIPEstat announced prefixes for AS<CF_ASN>
+if [[ "${CFG[ASN_PREFIX_EXPANSION]}" == "1" ]]; then
+    ripe="$(curl -sf --max-time 10 "${CFG[RIPESTAT_URL]}AS${CFG[CF_ASN]}" 2>/dev/null || true)"
+    pfx_n="$(printf '%s' "$ripe" | { grep -o '"prefix"' || true; } | wc -l | tr -d ' ')"
+    if [[ "$pfx_n" -gt 0 ]]; then
+        diag_ok "RIPEstat (Layer 1) reachable — $pfx_n AS${CFG[CF_ASN]} prefixes announced"
+    else
+        diag_fail "RIPEstat (Layer 1) returned no prefixes for AS${CFG[CF_ASN]}" \
+            "Check reachability: curl -v '${CFG[RIPESTAT_URL]}AS${CFG[CF_ASN]}'" \
+            "Layer 1 will warn at startup and run with only the published lists" \
+            "If your network blocks stat.ripe.net, override RIPESTAT_URL in $CONFIG_DST"
+    fi
+else
+    diag_ok "Layer 1 (ASN prefix expansion) disabled by config — skipped"
+fi
+
+# 4. Layer 2 — per-IP ASN lookup (1.1.1.1 must resolve to AS<CF_ASN>)
+if [[ "${CFG[ASN_FAILSAFE]}" == "1" ]]; then
+    asn_json="$(curl -sf --max-time "${CFG[ASN_LOOKUP_TIMEOUT]}" "${CFG[ASN_LOOKUP_URL]}1.1.1.1" 2>/dev/null || true)"
+    # Accept both RIPEstat ("asns":["N"]) and iptoasn ("as_number":N) shapes.
+    asn="$(printf '%s' "$asn_json" | { grep -oE '"asns"[[:space:]]*:[[:space:]]*\[[[:space:]]*"?[0-9]+' || true; } | { grep -oE '[0-9]+$' || true; } | head -1)"
+    if [[ -z "$asn" ]]; then
+        asn="$(printf '%s' "$asn_json" | { grep -oE '"as_number"[[:space:]]*:[[:space:]]*[0-9]+' || true; } | { grep -oE '[0-9]+$' || true; } | head -1)"
+    fi
+    if [[ "$asn" == "${CFG[CF_ASN]}" ]]; then
+        diag_ok "ASN lookup (Layer 2) reachable — 1.1.1.1 -> AS${asn}"
+    elif [[ -z "$asn" ]]; then
+        diag_fail "ASN lookup (Layer 2) unreachable or unparseable: ${CFG[ASN_LOOKUP_URL]}" \
+            "Check reachability: curl -v '${CFG[ASN_LOOKUP_URL]}1.1.1.1'" \
+            "Slow network? Raise ASN_LOOKUP_TIMEOUT in $CONFIG_DST (currently ${CFG[ASN_LOOKUP_TIMEOUT]}s)" \
+            "Not fatal: Layer 2 fails open (alerts still send), and Layer 1 already covers the full ASN"
+    else
+        diag_fail "ASN lookup returned AS${asn} for 1.1.1.1 (expected AS${CFG[CF_ASN]})" \
+            "Endpoint may use a different response format — check: curl '${CFG[ASN_LOOKUP_URL]}1.1.1.1'" \
+            "If you changed CF_ASN or ASN_LOOKUP_URL in $CONFIG_DST, verify they agree"
+    fi
+else
+    diag_ok "Layer 2 (per-IP ASN failsafe) disabled by config — skipped"
+fi
+
+# 5. smtp2go API + key validation (no test email is sent: empty recipient list)
+smtp_resp="$(curl -s --max-time 8 -X POST https://api.smtp2go.com/v3/email/send \
+    -H "Content-Type: application/json" \
+    -d "{\"api_key\":\"${CFG[SMTP2GO_KEY]}\",\"to\":[],\"sender\":\"${CFG[FROM_EMAIL]}\",\"subject\":\"\",\"text_body\":\"\"}" \
+    2>/dev/null || true)"
+if [[ -z "$smtp_resp" ]]; then
+    diag_fail "smtp2go API unreachable (api.smtp2go.com)" \
+        "Check outbound HTTPS/DNS: curl -v https://api.smtp2go.com/v3/email/send" \
+        "Until this is reachable, login alerts cannot be delivered"
+elif printf '%s' "$smtp_resp" | grep -qiE 'api.?_?key|NONEXISTENT|unauthori'; then
+    diag_fail "smtp2go rejected the API key" \
+        "Response: $(printf '%s' "$smtp_resp" | head -c 200)" \
+        "Re-check SMTP2GO_KEY in $CONFIG_DST (or re-run this installer and re-enter it)" \
+        "Keys are managed at app.smtp2go.com under Settings -> API Keys"
+else
+    diag_ok "smtp2go API reachable, API key accepted (no test email sent)"
+fi
+
+# 6. Seen-IPs state dir writable
+if touch "${CFG[SEEN_IPS_DIR]}/.diag_write_test" 2>/dev/null; then
+    rm -f "${CFG[SEEN_IPS_DIR]}/.diag_write_test"
+    diag_ok "seen-IPs dir writable: ${CFG[SEEN_IPS_DIR]}"
+else
+    diag_fail "seen-IPs dir not writable: ${CFG[SEEN_IPS_DIR]}" \
+        "Check mount/permissions: ls -ld ${CFG[SEEN_IPS_DIR]}" \
+        "Without it every login re-alerts on each occurrence (no 30-day memory)"
+fi
+
+echo
+if [[ "$DIAG_FAILS" -eq 0 ]]; then
+    echo "All diagnostics passed."
+else
+    echo "$DIAG_FAILS diagnostic(s) need attention — see the notes above. (Install itself completed.)"
+fi
+
 # --- Verify ---
 sleep 2
 if systemctl is-active --quiet owntracks-login-notify; then
     echo
     if (( EXISTING )); then
-        echo "owntracks-login-notify upgraded and active."
+        echo "owntracks-login-notify v${NEW_VERSION:-?} upgraded and active."
     else
-        echo "owntracks-login-notify installed and active."
+        echo "owntracks-login-notify v${NEW_VERSION:-?} installed and active."
     fi
     echo
     echo "View logs:    sudo journalctl -u owntracks-login-notify -f"
